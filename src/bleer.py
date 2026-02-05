@@ -1,10 +1,12 @@
 import asyncio
 import msvcrt
 import sys
+import time
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from itertools import cycle
 from typing import ValuesView
 
 from ansi_commands import Keys, flush, clear, home, move_cursor, hide_cursor, highlight, show_cursor, reset_color, write
@@ -13,12 +15,11 @@ OK = 0
 ERROR = 1
 
 # Screen coordinates and offsets
-HEIGHT: int = 41
+HEIGHT: int = 38
 WIDTH: int = 120
 HEADER: int = 1
 TOP_SEPERATOR: int = HEADER + 1
 FIRST_LINE: int = TOP_SEPERATOR + 1
-FIRST_USER: int = FIRST_LINE + 1
 FOOTER: int = HEIGHT - 1
 BOTTOM_SEPERATOR: int = FOOTER - 1
 LAST_LINE: int = BOTTOM_SEPERATOR - 1
@@ -41,14 +42,22 @@ async def get_key(queue: asyncio.Queue):
 async def scan(
     timeout: float, event: asyncio.Event, queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]]
 ):
-    TICK: float = 0.5
+    TICK: float = 0.15
+    DOTS = cycle(
+        [
+            "...",
+            " ..",
+            "  .",
+            ".  ",
+            ".. ",
+        ]
+    )
     while True:
         await event.wait()
+        end = time.time() + timeout
         async with BleakScanner() as scanner:
-            time_left = timeout
-            while time_left >= 0:
-                s = f"Scanning {time_left:.1F}..."
-                time_left -= TICK
+            while time.time() < end:
+                s = f"Scanning{next(DOTS)}"
                 write(1, FOOTER, f"{s:{WIDTH}}")
                 flush()
                 await asyncio.sleep(TICK)
