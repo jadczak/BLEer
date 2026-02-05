@@ -12,6 +12,18 @@ from ansi_commands import Keys, flush, clear, home, move_cursor, hide_cursor, hi
 OK = 0
 ERROR = 1
 
+# Screen coordinates and offsets
+HEIGHT: int = 41
+WIDTH: int = 120
+HEADER: int = 1
+TOP_SEPERATOR: int = HEADER + 1
+FIRST_LINE: int = TOP_SEPERATOR + 1
+FIRST_USER: int = FIRST_LINE + 1
+FOOTER: int = HEIGHT - 1
+BOTTOM_SEPERATOR: int = FOOTER - 1
+LAST_LINE: int = BOTTOM_SEPERATOR - 1
+WRITEABLE = LAST_LINE - FIRST_LINE
+
 
 async def get_key(queue: asyncio.Queue):
     while True:
@@ -29,77 +41,84 @@ async def get_key(queue: asyncio.Queue):
 async def scan(
     timeout: float, event: asyncio.Event, queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]]
 ):
+    TICK: float = 0.5
     while True:
         await event.wait()
         async with BleakScanner() as scanner:
-            await asyncio.sleep(timeout)
+            time_left = timeout
+            while time_left >= 0:
+                s = f"Scanning {time_left:.1F}..."
+                time_left -= TICK
+                write(1, FOOTER, f"{s:{WIDTH}}")
+                flush()
+                await asyncio.sleep(TICK)
             await queue.put(scanner.discovered_devices_and_advertisement_data)
             write(1, FOOTER, f"{'Scanning Finished':{WIDTH}}")
             flush()
             event.clear()
 
 
-HEIGHT: int = 41
-WIDTH: int = 120
-HEADER: int = 1
-TOP_SEPERATOR: int = HEADER + 1
-FIRST_LINE: int = TOP_SEPERATOR + 1
-FIRST_USER: int = FIRST_LINE + 1
-FOOTER: int = HEIGHT - 1
-BOTTOM_SEPERATOR: int = FOOTER - 1
-LAST_LINE: int = BOTTOM_SEPERATOR - 1
-MID_LINE: int = (LAST_LINE - FIRST_LINE) // 2
+def truncate(s: str | None, length: int) -> str:
+    if s is None:
+        s = "<UNKNOWN>"
+    if len(s) >= length:
+        s = s[: length - 4] + "..."
+    return s
 
 
-def update_scan_result(devices_and_data: ValuesView[tuple[BLEDevice, AdvertisementData]], user_line: int) -> int:
-    # not need to redraw if we are already at the limit of the screen.
-    if user_line < FIRST_USER:
-        user_line = FIRST_USER
-        return user_line
-    if user_line >= LAST_LINE:
-        user_line = LAST_LINE
-        return user_line
+def update_scan_result(devices_and_data: ValuesView[tuple[BLEDevice, AdvertisementData]], current_idx: int) -> int:
+    n_devices = len(devices_and_data)
+    last_idx = n_devices - 1
+    if current_idx < 0:
+        current_idx = 0
+    if current_idx > last_idx:
+        current_idx = last_idx
 
-    NAME_LEN = 20
-    ADDR_LEN = 20
-    RSSI_LEN = 6
-    LOCAL_LEN = 20
+    NAME_LEN: int = 20
+    ADDR_LEN: int = 20
+    RSSI_LEN: int = 6
+    LOCAL_LEN: int = 20
+    BLANK: str = " "
 
     header = f"{'Name':{NAME_LEN}}{'Address':{ADDR_LEN}}{
         'RSSI':^{RSSI_LEN}}{'Local Name':{LOCAL_LEN}}"
     write(1, FIRST_LINE, header)
-    # TODO: We're going to want to dynamically slice into the tuple, based on
-    #       where the user is in the list.  Once we get past half way down the
-    #       list and we aren't showing the bottom we should bump the view.
-    #       Same thing in the other direction.  If we cross into the upper half
-    #       of the window and we aren't showing the top of the list, bump the list
-    #       down one.  When we are in bump mode the user line is going to stay
-    #       where it is and the list will move under it.
 
-    # FIX:  currently user_line can walk past the bottom of the list.
-    for dev_no, (dev, data) in enumerate(devices_and_data, 1):
-        write_line = FIRST_LINE + dev_no
-        if write_line < LAST_LINE:
-            name = dev.name if dev.name else "<UNKNOWN>"
-            if len(name) >= NAME_LEN:
-                name = name[: NAME_LEN - 4] + "..."
-            local_name = data.local_name if data.local_name else "<UNKNOWN>"
-            if len(local_name) >= NAME_LEN:
-                local_name = local_name[: NAME_LEN - 4] + "..."
-
-            dev_addr = dev.address
+    # NOTE: Try putting the current idex in the middle of the writeable
+    #       area.  Calculate the theoretic start, clamping it to 0.
+    #       Calculate the theoretic end, clamping it to the writeable
+    #       area.
+    start_idx = current_idx - WRITEABLE // 2
+    if start_idx < 0:
+        start_idx = 0
+    end_idx = start_idx + last_idx
+    if end_idx >= WRITEABLE:
+        end_idx = start_idx + WRITEABLE
+    line_no = 0
+    for x, (dev, data) in enumerate(devices_and_data):
+        if x < end_idx and x >= start_idx:
+            line_no += 1
+            name = truncate(dev.name, NAME_LEN)
+            local_name = truncate(data.local_name, LOCAL_LEN)
+            dev_addr = truncate(dev.address, ADDR_LEN)
+            rssi = truncate(str(data.rssi), RSSI_LEN)
             s = f"{name:{NAME_LEN}}{dev_addr:{ADDR_LEN}}{
-                data.rssi:^{RSSI_LEN}}{local_name:{LOCAL_LEN}}"
-            if write_line == user_line:
-                highlight(1, write_line, s)
+                rssi:^{RSSI_LEN}}{local_name:{LOCAL_LEN}}"
+            if x == current_idx:
+                highlight(1, FIRST_LINE + line_no, s)
             else:
-                write(1, write_line, s)
+                write(1, FIRST_LINE + line_no, s)
         else:
-            write(1, write_line, f"{'---MORE---':{WIDTH}}")
-            flush()
-            break
-        flush()
-    return user_line
+            continue
+    # NOTE: blank out any lines that weren't written to, to clear
+    #       previous writes.
+    for blank in range(line_no + 1, WRITEABLE + 1):
+        write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
+    # NOTE: Indicate that there are devices not being written.
+    if end_idx <= last_idx:
+        write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
+    flush()
+    return current_idx
 
 
 async def main():
@@ -115,15 +134,14 @@ async def main():
     # Setup all_tasks
     main_task = asyncio.current_task()
     scan_event = asyncio.Event()
-    scan_queue: asyncio.Queue[dict[str, tuple[BLEDevice,
-                                              AdvertisementData]]] = asyncio.Queue()
+    scan_queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]] = asyncio.Queue()
     key_queue = asyncio.Queue()
     asyncio.create_task(scan(5.0, scan_event, scan_queue), name="scan task")
     asyncio.create_task(get_key(key_queue), name="keyboard task")
 
     # Main loop
     key = ""
-    user_line: int = FIRST_USER
+    current_idx: int = 0
     devices_and_data = {}.values()
     while key != Keys.Q:
         # Get keyboard input
@@ -142,19 +160,28 @@ async def main():
                 flush()
             case Keys.UP:
                 if devices_and_data:
-                    user_line -= 1
-                    user_line = update_scan_result(devices_and_data, user_line)
+                    current_idx -= 1
+                    current_idx = update_scan_result(devices_and_data, current_idx)
+            case Keys.PG_UP:
+                if devices_and_data:
+                    current_idx -= 10
+                    current_idx = update_scan_result(devices_and_data, current_idx)
+
             case Keys.DOWN:
                 if devices_and_data:
-                    user_line += 1
-                    user_line = update_scan_result(devices_and_data, user_line)
+                    current_idx += 1
+                    current_idx = update_scan_result(devices_and_data, current_idx)
+            case Keys.PG_DOWN:
+                if devices_and_data:
+                    current_idx += 10
+                    current_idx = update_scan_result(devices_and_data, current_idx)
 
         # Handle scan results
         if not scan_queue.empty():
             scan_results = await scan_queue.get()
             devices_and_data = scan_results.values()
-            user_line = FIRST_USER
-            update_scan_result(devices_and_data, user_line)
+            current_idx = 0
+            update_scan_result(devices_and_data, current_idx)
         await asyncio.sleep(0.01)
 
     # Clean up on quit
