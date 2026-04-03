@@ -6,6 +6,7 @@ import time
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from dataclasses import dataclass
 from itertools import cycle
 from typing import ValuesView
 
@@ -24,6 +25,23 @@ FOOTER: int = HEIGHT - 1
 BOTTOM_SEPERATOR: int = FOOTER - 1
 LAST_LINE: int = BOTTOM_SEPERATOR - 1
 WRITEABLE = LAST_LINE - FIRST_LINE
+
+
+class ScanData:
+    # Note: couldn't get a dataclass working for this.
+    # mutable default data needs a default_factory and things got annoying.
+    __slots__ = "current_idx", "devices_and_data"
+
+    def __init__(self):
+        self.current_idx: int = 0
+        self.devices_and_data: ValuesView[tuple[BLEDevice, AdvertisementData]] = {}.values()
+
+
+class State:
+    __slots__ = "scan"
+
+    def __init__(self):
+        self.scan: ScanData = ScanData()
 
 
 async def get_key(queue: asyncio.Queue):
@@ -75,13 +93,13 @@ def truncate(s: str | None, length: int) -> str:
     return s
 
 
-def update_scan_result(devices_and_data: ValuesView[tuple[BLEDevice, AdvertisementData]], current_idx: int) -> int:
-    n_devices = len(devices_and_data)
+def update_scan_result(scan: ScanData) -> int:
+    n_devices = len(scan.devices_and_data)
     last_idx = n_devices - 1
-    if current_idx < 0:
-        current_idx = 0
-    if current_idx > last_idx:
-        current_idx = last_idx
+    if scan.current_idx < 0:
+        scan.current_idx = 0
+    if scan.current_idx > last_idx:
+        scan.current_idx = last_idx
 
     NAME_LEN: int = 20
     ADDR_LEN: int = 20
@@ -89,31 +107,29 @@ def update_scan_result(devices_and_data: ValuesView[tuple[BLEDevice, Advertiseme
     LOCAL_LEN: int = 20
     BLANK: str = " "
 
-    header = f"{'Name':{NAME_LEN}}{'Address':{ADDR_LEN}}{
-        'RSSI':^{RSSI_LEN}}{'Local Name':{LOCAL_LEN}}"
+    header = f"{'Name':{NAME_LEN}}{'Address':{ADDR_LEN}}{'RSSI':^{RSSI_LEN}}{'Local Name':{LOCAL_LEN}}"
     write(1, FIRST_LINE, header)
 
     # NOTE: Try putting the current idex in the middle of the writeable
     #       area.  Calculate the theoretic start, clamping it to 0.
     #       Calculate the theoretic end, clamping it to the writeable
     #       area.
-    start_idx = current_idx - WRITEABLE // 2
+    start_idx = scan.current_idx - WRITEABLE // 2
     if start_idx < 0:
         start_idx = 0
     end_idx = start_idx + last_idx
     if end_idx >= WRITEABLE:
         end_idx = start_idx + WRITEABLE
     line_no = 0
-    for x, (dev, data) in enumerate(devices_and_data):
+    for x, (dev, data) in enumerate(scan.devices_and_data):
         if x < end_idx and x >= start_idx:
             line_no += 1
             name = truncate(dev.name, NAME_LEN)
             local_name = truncate(data.local_name, LOCAL_LEN)
             dev_addr = truncate(dev.address, ADDR_LEN)
             rssi = truncate(str(data.rssi), RSSI_LEN)
-            s = f"{name:{NAME_LEN}}{dev_addr:{ADDR_LEN}}{
-                rssi:^{RSSI_LEN}}{local_name:{LOCAL_LEN}}"
-            if x == current_idx:
+            s = f"{name:{NAME_LEN}}{dev_addr:{ADDR_LEN}}{rssi:^{RSSI_LEN}}{local_name:{LOCAL_LEN}}"
+            if x == scan.current_idx:
                 highlight(1, FIRST_LINE + line_no, s)
             else:
                 write(1, FIRST_LINE + line_no, s)
@@ -127,7 +143,7 @@ def update_scan_result(devices_and_data: ValuesView[tuple[BLEDevice, Advertiseme
     if end_idx <= last_idx:
         write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
     flush()
-    return current_idx
+    return scan.current_idx
 
 
 async def main():
@@ -150,8 +166,8 @@ async def main():
 
     # Main loop
     key = ""
-    current_idx: int = 0
-    devices_and_data = {}.values()
+    state = State()
+
     while key != Keys.Q:
         # Get keyboard input
         if not key_queue.empty():
@@ -168,29 +184,32 @@ async def main():
                     write(1, FOOTER, f"{'Starting scan...':{WIDTH}}")
                 flush()
             case Keys.UP:
-                if devices_and_data:
-                    current_idx -= 1
-                    current_idx = update_scan_result(devices_and_data, current_idx)
+                if state.scan.devices_and_data:
+                    state.scan.current_idx -= 1
+                    state.scan.current_idx = update_scan_result(state.scan)
             case Keys.PG_UP:
-                if devices_and_data:
-                    current_idx -= 10
-                    current_idx = update_scan_result(devices_and_data, current_idx)
+                if state.scan.devices_and_data:
+                    state.scan.current_idx -= 10
+                    state.scan.current_idx = update_scan_result(state.scan)
 
             case Keys.DOWN:
-                if devices_and_data:
-                    current_idx += 1
-                    current_idx = update_scan_result(devices_and_data, current_idx)
+                if state.scan.devices_and_data:
+                    state.scan.current_idx += 1
+                    state.scan.current_idx = update_scan_result(state.scan)
             case Keys.PG_DOWN:
-                if devices_and_data:
-                    current_idx += 10
-                    current_idx = update_scan_result(devices_and_data, current_idx)
+                if state.scan.devices_and_data:
+                    state.scan.current_idx += 10
+                    state.scan.current_idx = update_scan_result(state.scan)
 
         # Handle scan results
         if not scan_queue.empty():
             scan_results = await scan_queue.get()
-            devices_and_data = scan_results.values()
+            state.scan.devices_and_data = scan_results.values()
+            state.scan.devices_and_data = sorted(
+                state.scan.devices_and_data, key=lambda x: x[1].rssi, reverse=True
+            )
             current_idx = 0
-            update_scan_result(devices_and_data, current_idx)
+            update_scan_result(state.scan)
         await asyncio.sleep(0.01)
 
     # Clean up on quit
