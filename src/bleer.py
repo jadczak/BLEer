@@ -103,6 +103,34 @@ async def scan(
             event.clear()
 
 
+async def animate(event: asyncio.Event, animation: asyncio.Queue[List[str]], timeout: asyncio.Queue[float]):
+    TICK: float = 0.15
+    default = cycle(
+        [
+            "Awaiting...",
+            "Awaiting ..",
+            "Awaiting  .",
+            "Awaiting.  ",
+            "Awaiting.. ",
+        ]
+    )
+    while True:
+        await event.wait()
+        if not timeout.empty():
+            end = time.time() + await timeout.get()
+        else:
+            end = time.time() + 30
+        if not animation.empty():
+            frames = cycle(await animation.get())
+        else:
+            frames = default
+        while event.is_set() and time.time() < end:
+            s = f"{next(frames)}"
+            write(1, FOOTER, f"{s:{WIDTH}}")
+            flush()
+            await asyncio.sleep(TICK)
+
+
 def truncate(s: str | None, length: int) -> str:
     if s is None:
         s = "<UNKNOWN>"
@@ -229,6 +257,23 @@ def update_conn_data(conn: ConnData) -> int:
 
 
 async def bleer(state: State):
+    # Asyncio stuff
+    main_task = asyncio.current_task()
+
+    scan_event = asyncio.Event()
+    animate_event = asyncio.Event()
+
+    scan_queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]] = asyncio.Queue()
+    key_queue = asyncio.Queue()
+    animation_queue: asyncio.Queue[list[str]] = asyncio.Queue()
+    animation_timeout_queue: asyncio.Queue[float] = asyncio.Queue()
+
+    asyncio.create_task(scan(5.0, scan_event, scan_queue), name="scan task")
+    asyncio.create_task(get_key(key_queue), name="keyboard task")
+    asyncio.create_task(
+        animate(event=animate_event, animation=animation_queue, timeout=animation_timeout_queue), name="animate task"
+    )
+
     # Setup the terminal
     hide_cursor()
     clear()
@@ -238,16 +283,10 @@ async def bleer(state: State):
     write(1, BOTTOM_SEPERATOR, "-" * WIDTH)
     flush()
 
-    # Setup all_tasks
-    main_task = asyncio.current_task()
-    scan_event = asyncio.Event()
-    scan_queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]] = asyncio.Queue()
-    key_queue = asyncio.Queue()
-    asyncio.create_task(scan(5.0, scan_event, scan_queue), name="scan task")
-    asyncio.create_task(get_key(key_queue), name="keyboard task")
-
     # Main loop
     key = ""
+
+    conn_timeout: float = 30
     while key != Keys.Q:
         if not key_queue.empty():
             key = await key_queue.get()
@@ -281,14 +320,28 @@ async def bleer(state: State):
                             state.scan.current_idx = update_scan_result(state.scan)
                     case Keys.ENTER:
                         state.conn.device_and_data = state.scan.devices_and_data[state.scan.current_idx]
-                        write(1, FOOTER, f"{f'Connecting to {state.conn.device_and_data[0].address}':{WIDTH}}")
-                        flush()
-                        state.conn.client = BleakClient(state.conn.device_and_data[0])
-                        await state.conn.client.connect()
-                        write(1, FOOTER, f"{'Connected':{WIDTH}}")
-                        flush()
-                        state.mode = Mode.CONN
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        addr = state.conn.device_and_data[0].address
+                        animation = [
+                            f"Connecting to {addr}...",
+                            f"Connecting to {addr} ..",
+                            f"Connecting to {addr}  .",
+                            f"Connecting to {addr}.  ",
+                            f"Connecting to {addr}.. ",
+                        ]
+                        await animation_queue.put(animation)
+                        await animation_timeout_queue.put(conn_timeout)
+                        try:
+                            state.conn.client = BleakClient(state.conn.device_and_data[0], timeout=conn_timeout)
+                            animate_event.set()
+                            await state.conn.client.connect()
+                            animate_event.clear()
+                            write(1, FOOTER, f"{'Connected':{WIDTH}}")
+                            state.mode = Mode.CONN
+                            state.conn.current_idx = update_conn_data(state.conn)
+                        except TimeoutError:
+                            animate_event.clear()
+                            write(1, FOOTER, f"{f'Failed to connect to {addr}':{WIDTH}}")
+                            flush()
 
                 # Handle scan results
                 if not scan_queue.empty():
@@ -338,9 +391,7 @@ async def bleer(state: State):
     for task in asyncio.all_tasks():
         if not (task == main_task):
             task.cancel()
-    reset_color()
-    move_cursor(1, HEIGHT)
-    show_cursor()
+
     return OK
 
 
@@ -351,7 +402,13 @@ async def main():
     # of guarenteeing that we are going to be able close the connection.
     try:
         await bleer(state)
+        reset_color()
+        move_cursor(1, HEIGHT)
+        show_cursor()
     except Exception as e:
+        reset_color()
+        move_cursor(1, HEIGHT)
+        show_cursor()
         if state.conn.client is not None:
             if state.conn.client.is_connected:
                 await state.conn.client.disconnect()
