@@ -30,7 +30,7 @@ WRITEABLE = LAST_LINE - FIRST_LINE
 
 
 class ScanData:
-    # Note: couldn't get a dataclass working for this.
+    # NOTE: couldn't get a dataclass working for this.
     # mutable default data needs a default_factory and things got annoying.
     __slots__ = "current_idx", "devices_and_data"
 
@@ -134,9 +134,8 @@ def update_scan_result(scan: ScanData) -> int:
     write(1, FIRST_LINE, header)
 
     # NOTE: Try putting the current idex in the middle of the writeable
-    #       area.  Calculate the theoretic start, clamping it to 0.
-    #       Calculate the theoretic end, clamping it to the writeable
-    #       area.
+    # area.  Calculate the theoretic start, clamping it to 0.
+    # Calculate the theoretic end, clamping it to the writeable area.
     start_idx = scan.current_idx - WRITEABLE // 2
     if start_idx < 0:
         start_idx = 0
@@ -158,8 +157,7 @@ def update_scan_result(scan: ScanData) -> int:
                 write(1, FIRST_LINE + line_no, s)
         else:
             continue
-    # NOTE: blank out any lines that weren't written to, to clear
-    #       previous writes.
+    # NOTE: blank out any lines that weren't written to, to clear previous writes.
     for blank in range(line_no + 1, WRITEABLE + 1):
         write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
     # NOTE: Indicate that there are devices not being written.
@@ -198,9 +196,8 @@ def update_conn_data(conn: ConnData) -> int:
     write(1, FIRST_LINE, header)
 
     # NOTE: Try putting the current idex in the middle of the writeable
-    #       area.  Calculate the theoretic start, clamping it to 0.
-    #       Calculate the theoretic end, clamping it to the writeable
-    #       area.
+    # area.  Calculate the theoretic start, clamping it to 0.
+    # Calculate the theoretic end, clamping it to the writeable area.
     start_idx = conn.current_idx - WRITEABLE // 2
     if start_idx < 0:
         start_idx = 0
@@ -221,8 +218,7 @@ def update_conn_data(conn: ConnData) -> int:
                 write(1, FIRST_LINE + line_no, s)
         else:
             continue
-    # NOTE: blank out any lines that weren't written to, to clear
-    #       previous writes.
+    # NOTE: blank out any lines that weren't written to, to clear previous writes.
     for blank in range(line_no + 1, WRITEABLE + 1):
         write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
     # NOTE: Indicate that there are devices not being written.
@@ -365,3 +361,11 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     sys.exit(OK)
+
+
+# TODO: Add a connecting state to ensure we don't quit while we are
+# awaiting a client.connect()
+
+# TODO: add a data field for any characteristic that has read in the properties
+
+# TODO: add notify callbacks that will update the data field for characteristics and call update_conn_data()
