@@ -163,7 +163,7 @@ def update_scan_result(scan: ScanData) -> int:
     for blank in range(line_no + 1, WRITEABLE + 1):
         write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
     # NOTE: Indicate that there are devices not being written.
-    if end_idx <= last_idx:
+    if end_idx <= last_idx and end_idx >= WRITEABLE:
         write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
     flush()
     return scan.current_idx
@@ -176,8 +176,8 @@ def update_conn_data(conn: ConnData) -> int:
         ("MTU Size", conn.client.mtu_size),
     ]
 
-    for x, service in enumerate(conn.client.services):
-        conn_data.append((f"Service {x:2}", service))
+    for i, service in enumerate(conn.client.services):
+        conn_data.append((f"Service {i:2}", service))
         for char in service.characteristics:
             conn_data.append((f" Characteristic", char.uuid))
             conn_data.append((f" Properties", char.properties))
@@ -226,7 +226,7 @@ def update_conn_data(conn: ConnData) -> int:
     for blank in range(line_no + 1, WRITEABLE + 1):
         write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
     # NOTE: Indicate that there are devices not being written.
-    if end_idx <= last_idx:
+    if end_idx <= last_idx and end_idx >= WRITEABLE:
         write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
     flush()
     return conn.current_idx
@@ -307,7 +307,11 @@ async def bleer(state: State):
             case Mode.CONN:
                 match key:
                     case Keys.D:
-                        write(1, FOOTER, f"{f'Disconnecting from {state.conn.client.address}':{WIDTH}}")
+                        write(
+                            1,
+                            FOOTER,
+                            f"{f'Disconnecting from {state.conn.client.address}':{WIDTH}}",
+                        )
                         flush()
                         await state.conn.client.disconnect()
                         write(1, FOOTER, f"{'Disconnected':{WIDTH}}")
@@ -332,8 +336,9 @@ async def bleer(state: State):
     # Clean up on quit
     write(1, FOOTER, f"{'Quitting...':{WIDTH}}")
     flush()
-    if state.conn.client.is_connected:
-        await state.conn.client.disconnect()
+    if state.conn.client is not None:
+        if state.conn.client.is_connected:
+            await state.conn.client.disconnect()
     for task in asyncio.all_tasks():
         if not (task == main_task):
             task.cancel()
