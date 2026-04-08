@@ -154,37 +154,37 @@ def update_scan_result(scan: ScanData) -> int:
         f"{'Name':{NAME_LEN}}{'Address':{ADDR_LEN}}{'RSSI':^{RSSI_LEN}}{'Local Name':{LOCAL_LEN}}{BLANK:{BLANK_LEN}}"
     )
     write(1, FIRST_LINE, header)
+    line_no = FIRST_LINE + 1
 
-    # NOTE: Try putting the current idex in the middle of the writeable
-    # area.  Calculate the theoretic start, clamping it to 0.
-    # Calculate the theoretic end, clamping it to the writeable area.
+    # NOTE: Try putting the highlighted line in the middle of the writable area.
     start_idx = scan.current_idx - WRITEABLE // 2
     if start_idx < 0:
         start_idx = 0
-    end_idx = start_idx + last_idx
-    if end_idx >= WRITEABLE:
-        end_idx = start_idx + WRITEABLE
-    line_no = 0
-    for x, (dev, data) in enumerate(scan.devices_and_data):
-        if x < end_idx and x >= start_idx:
-            line_no += 1
+
+    for idx, (dev, data) in enumerate(scan.devices_and_data):
+        if line_no <= LAST_LINE and idx >= start_idx:
             name = truncate(dev.name, NAME_LEN)
             local_name = truncate(data.local_name, LOCAL_LEN)
             dev_addr = truncate(dev.address, ADDR_LEN)
             rssi = truncate(str(data.rssi), RSSI_LEN)
             s = f"{name:{NAME_LEN}}{dev_addr:{ADDR_LEN}}{rssi:^{RSSI_LEN}}{local_name:{LOCAL_LEN}}{BLANK:{BLANK_LEN}}"
-            if x == scan.current_idx:
-                highlight(1, FIRST_LINE + line_no, s)
+            if idx == scan.current_idx:
+                highlight(1, line_no, s)
             else:
-                write(1, FIRST_LINE + line_no, s)
+                write(1, line_no, s)
+            line_no += 1
         else:
             continue
-    # NOTE: blank out any lines that weren't written to, to clear previous writes.
-    for blank in range(line_no + 1, WRITEABLE + 1):
-        write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
-    # NOTE: Indicate that there are devices not being written.
-    if end_idx <= last_idx and end_idx >= WRITEABLE:
+
+    if (last_idx - start_idx) >= WRITEABLE:
+        # there's more data that didn't fit the screen.
         write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
+    else:
+        # make sure we blank out stuff that didn't get
+        # drawn this update.
+        while line_no <= LAST_LINE:
+            write(1, line_no, f"{BLANK:{WIDTH}}")
+            line_no += 1
     flush()
     return scan.current_idx
 
@@ -216,36 +216,35 @@ def update_conn_data(conn: ConnData) -> int:
 
     header = f"{'Field':{FIELD_LEN}}{'DATA':{DATA_LEN}}"
     write(1, FIRST_LINE, header)
+    line_no = FIRST_LINE + 1
 
-    # NOTE: Try putting the current idex in the middle of the writeable
-    # area.  Calculate the theoretic start, clamping it to 0.
-    # Calculate the theoretic end, clamping it to the writeable area.
+    # NOTE: Try putting the highlighted line in the middle of the writable area.a.
     start_idx = conn.current_idx - WRITEABLE // 2
     if start_idx < 0:
         start_idx = 0
-    end_idx = start_idx + last_idx
-    if end_idx >= WRITEABLE:
-        end_idx = start_idx + WRITEABLE
-    line_no = 0
 
-    for x, (field, data) in enumerate(conn_data):
-        if x < end_idx and x >= start_idx:
-            line_no += 1
+    for idx, (field, data) in enumerate(conn_data):
+        if line_no <= LAST_LINE and idx >= start_idx:
             f_string = truncate(field, DATA_LEN)
             d_string = truncate(data, DATA_LEN)
             s = f"{f_string:{FIELD_LEN}}{d_string:{DATA_LEN}}"
-            if x == conn.current_idx:
-                highlight(1, FIRST_LINE + line_no, s)
+            if idx == conn.current_idx:
+                highlight(1, line_no, s)
             else:
-                write(1, FIRST_LINE + line_no, s)
+                write(1, line_no, s)
+            line_no += 1
         else:
             continue
-    # NOTE: blank out any lines that weren't written to, to clear previous writes.
-    for blank in range(line_no + 1, WRITEABLE + 1):
-        write(1, FIRST_LINE + blank, f"{BLANK:{WIDTH}}")
-    # NOTE: Indicate that there are devices not being written.
-    if end_idx <= last_idx and end_idx >= WRITEABLE:
+
+    if (last_idx - start_idx) >= WRITEABLE:
+        # there's more data that didn't fit the screen.
         write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
+    else:
+        # make sure we blank out stuff that didn't get
+        # drawn this update.
+        while line_no <= LAST_LINE:
+            write(1, line_no, f"{BLANK:{WIDTH}}")
+            line_no += 1
     flush()
     return conn.current_idx
 
