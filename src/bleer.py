@@ -198,10 +198,10 @@ def update_conn_data(conn: ConnData) -> int:
 
     for i, service in enumerate(conn.client.services):
         conn_data.append((f"Service {i:2}", service))
-        for char in service.characteristics:
-            conn_data.append((f" Characteristic", char.uuid))
-            conn_data.append((f" Properties", char.properties))
-            conn_data.append((f" Handle", char.handle))
+        for x, char in enumerate(service.characteristics):
+            conn_data.append((f" Characteristic {x:2}", char.uuid))
+            conn_data.append((f"   Properties", char.properties))
+            conn_data.append((f"   Handle", char.handle))
 
     n_items = len(conn_data)
     last_idx = n_items - 1
@@ -383,8 +383,6 @@ async def bleer(state: State):
     for task in asyncio.all_tasks():
         if not (task == main_task):
             task.cancel()
-
-    return OK
 
 
 async def main():
