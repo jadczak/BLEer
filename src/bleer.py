@@ -7,6 +7,8 @@ from bleak import BleakClient
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.exc import BleakError
 from enum import auto, Enum
 from itertools import cycle
 from typing import ValuesView
@@ -40,12 +42,14 @@ class ScanData:
 
 
 class ConnData:
-    __slots__ = "device_and_data", "client", "current_idx"
+    __slots__ = "device_and_data", "client", "current_idx", "char_data", "conn_cache"
 
     def __init__(self):
         self.device_and_data: tuple[BLEDevice, AdvertisementData] = (None, None)
         self.client: BleakClient | None = None
         self.current_idx: int = 0
+        self.char_data: dict[BleakGATTCharacteristic, bytearray] = {}
+        self.conn_cache: list[str, str] = []
 
 
 class Mode(Enum):
@@ -115,10 +119,13 @@ async def animate(event: asyncio.Event, animation_data: asyncio.Queue[Animation_
     TICK: float = 0.15
     while True:
         await event.wait()
-        data = await animation_data.get()
+        while not animation_data.empty():
+            data = await animation_data.get()
         end = time.time() + data.timeout
         frames = cycle(data.animation)
         while event.is_set() and time.time() < end:
+            # TODO: what was the purpose of having a timeout?
+            # this can probably be removed...?
             s = f"{next(frames)}"
             write(1, FOOTER, f"{s:{WIDTH}}")
             flush()
@@ -190,18 +197,26 @@ def update_scan_result(scan: ScanData) -> int:
 
 
 def update_conn_data(conn: ConnData) -> int:
-    conn_data = [
-        ("Name", conn.client.name),
-        ("Address", conn.client.address),
-        ("MTU Size", conn.client.mtu_size),
-    ]
+    if conn.client.is_connected:
+        conn_data = [
+            ("Name", conn.client.name),
+            ("Address", conn.client.address),
+            ("MTU Size", conn.client.mtu_size),
+        ]
 
-    for i, service in enumerate(conn.client.services):
-        conn_data.append((f"Service {i:2}", service))
-        for x, char in enumerate(service.characteristics):
-            conn_data.append((f" Characteristic {x:2}", char.uuid))
-            conn_data.append((f"   Properties", char.properties))
-            conn_data.append((f"   Handle", char.handle))
+        for i, service in enumerate(conn.client.services):
+            conn_data.append((f"Service {i:2}", service))
+            for x, char in enumerate(service.characteristics):
+                conn_data.append((f" Characteristic {x:2}", char.uuid))
+                conn_data.append((f"   Properties", char.properties))
+                if "read" in char.properties or "notify" in char.properties:
+                    if char not in conn.char_data:
+                        conn.char_data[char] = bytearray()
+                    conn_data.append((f"   Data", conn.char_data[char].hex()))
+                conn_data.append((f"   Handle", char.handle))
+        conn.conn_cache = conn_data
+    else:
+        conn_data = conn.conn_cache
 
     n_items = len(conn_data)
     last_idx = n_items - 1
@@ -249,6 +264,32 @@ def update_conn_data(conn: ConnData) -> int:
     return conn.current_idx
 
 
+async def read_characteristics(
+    conn: ConnData, animate_event: asyncio.Event, animation_queue: asyncio.Queue[Animation_Data]
+):
+    for service in conn.client.services:
+        for char in service.characteristics:
+            if (char in conn.char_data) and ("read" in char.properties) and conn.client.is_connected:
+                animation_data = Animation_Data()
+                animation_data.animation = [
+                    f"Reading {char.uuid}...",
+                    f"Reading {char.uuid} ..",
+                    f"Reading {char.uuid}  .",
+                    f"Reading {char.uuid}.  ",
+                    f"Reading {char.uuid}.. ",
+                ]
+                animation_data.timeout = float("inf")
+                await animation_queue.put(animation_data)
+                animate_event.set()
+                try:
+                    conn.char_data[char] = await conn.client.read_gatt_char(char)
+                except BleakError:
+                    conn.char_data[char] = bytearray.fromhex("DEAD C0DE")
+                except TimeoutError:
+                    conn.char_data[char] = bytearray.fromhex("DEAD 7IME")
+                animate_event.clear()
+
+
 async def bleer(state: State):
     # Asyncio stuff
     main_task = asyncio.current_task()
@@ -268,7 +309,7 @@ async def bleer(state: State):
     hide_cursor()
     clear()
     home()
-    write(1, HEADER, f"{'(Q)uit (S)can (D)isconnect':{WIDTH}}")
+    write(1, HEADER, f"{'(Q)uit (S)can (D)isconnect (R)ead':{WIDTH}}")
     write(1, TOP_SEPERATOR, "-" * WIDTH)
     write(1, BOTTOM_SEPERATOR, "-" * WIDTH)
     flush()
@@ -319,7 +360,7 @@ async def bleer(state: State):
                             f"Connecting to {addr}.  ",
                             f"Connecting to {addr}.. ",
                         ]
-                        animation_data.timeoout = conn_timeout
+                        animation_data.timeout = conn_timeout
                         await animation_queue.put(animation_data)
                         try:
                             state.conn.client = BleakClient(state.conn.device_and_data[0], timeout=conn_timeout)
@@ -371,6 +412,13 @@ async def bleer(state: State):
                     case Keys.PG_DOWN:
                         state.conn.current_idx += 10
                         state.conn.current_idx = update_conn_data(state.conn)
+                    case Keys.R:
+                        await read_characteristics(state.conn, animate_event, animation_queue)
+                        write(1, FOOTER, f"{'Finished reading characteristics':{WIDTH}}")
+                        state.conn.current_idx = update_conn_data(state.conn)
+                        flush()
+                if not state.conn.client.is_connected and state.mode == Mode.CONN:
+                    write(1, FOOTER, f"{'Client Disconnected - Press D to go back to scan':{WIDTH}}")
 
         await asyncio.sleep(0.01)
 
@@ -413,6 +461,9 @@ if __name__ == "__main__":
 # TODO: Add a connecting state to ensure we don't quit while we are
 # awaiting a client.connect()
 
-# TODO: add a data field for any characteristic that has read in the properties
-
 # TODO: add notify callbacks that will update the data field for characteristics and call update_conn_data()
+
+# TODO: Figure out a way to cache data so we can get disconnected
+# in the middle of reading, and be able to populate information
+# that was read.  Once the connection is terminated
+# we can't access data from the diconnected client.
