@@ -44,13 +44,14 @@ class ScanData:
 
 
 class ConnData:
-    __slots__ = "device_and_data", "client", "current_idx", "cache"
+    __slots__ = "device_and_data", "client", "current_idx", "cache", "notifying"
 
     def __init__(self):
         self.device_and_data: tuple[BLEDevice, AdvertisementData] = (None, None)
         self.client: BleakClient | None = None
         self.current_idx: int = 0
         self.cache: ClientCache = None
+        self.notifying: bool = False
 
 
 class Mode(Enum):
@@ -149,14 +150,14 @@ async def animate(event: asyncio.Event, animation_data: asyncio.Queue[Animation_
     while True:
         await event.wait()
         while not animation_data.empty():
+            # guard against multiple animations getting queued
+            # before the event-loop services this function
             data = await animation_data.get()
         frames = cycle(data.animation)
         while event.is_set():
             if not animation_data.empty():
                 data = await animation_data.get()
                 frames = cycle(data.animation)
-            # TODO: what was the purpose of having a timeout?
-            # this can probably be removed...?
             s = f"{next(frames)}"
             write(1, FOOTER, f"{s:{WIDTH}}")
             flush()
@@ -330,9 +331,106 @@ async def read_characteristics(
                 except TimeoutError:
                     char.data = bytearray.fromhex("DEAD 7IME")
                 animate_event.clear()
+                await asyncio.sleep(0)
 
 
 async def bleer(state: State):
+    def notify_callback(char: BleakGATTCharacteristic, data: bytearray):
+        # NOTE: I hate that the callback can't take the equivent of a struct
+        # which includes user data and we have to do these scope shenanigans
+        # to "pass in" data.
+        for service in conn.cache.services:
+            for chached_char in service.characteristics:
+                if chached_char.uuid == char.uuid:
+                    cached_char.data = copy(data)
+                    write(1, FOOTER, f"'Notification received on {char.uuid}':{WIDTH}")
+                    flush()
+                    return
+        write(1, FOOTER, f"'Received unknown notification on {char.uuid}':{WIDTH}")
+        flush()
+
+    async def notify_all(
+        conn: ConnData, animate_event: asyncio.Event, animation_queue: asyncio.Queue[Animation_Data]
+    ) -> bool:
+        # NOTE: I hate that the callback can't take the equivent of a struct
+        # which includes user data and we have to do these scope shenanigans
+        # to "pass in" data.
+        for service in state.conn.client.services:
+            for char in service.characteristics:
+                if "notify" in char.properties:
+                    try:
+                        animation_data = Animation_Data()
+                        animation_data.animation = [
+                            f"Starting notification of {char.uuid}...",
+                            f"Starting notification of {char.uuid} ..",
+                            f"Starting notification of {char.uuid}  .",
+                            f"Starting notification of {char.uuid}.  ",
+                            f"Starting notification of {char.uuid}.. ",
+                        ]
+                        await animation_queue.put(animation_data)
+                        animate_event.set()
+                        await state.conn.client.start_notify(char, notify_callback)
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                    except BleakError:
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                        write(1, FOOTER, f"'BleakError registering notification {char.uuid}':{WIDTH}")
+                        flush()
+                        return False
+                    except TimeoutError:
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                        write(1, FOOTER, f"'TimeoutError registering notification {char.uuid}':{WIDTH}")
+                        flush()
+                        return False
+        write(1, FOOTER, f"{'Notifications Enabled':{WIDTH}}")
+        flush()
+        return True
+
+    async def notify_none(
+        conn: ConnData, animate_event: asyncio.Event, animation_queue: asyncio.Queue[Animation_Data]
+    ) -> bool:
+        # NOTE: Since stopping notifications doesn't need to have access to
+        # the callback, we could move this out of the scope, but for
+        # consistency I'm leaving it here with the other notification stuff.
+
+        # Note: Always returns False.  If we fail to stop notifications
+        # we'll assume that something stupid has happened and we aren't
+        # receving notifications anymore.
+        for service in state.conn.client.services:
+            for char in service.characteristics:
+                if "notify" in char.properties:
+                    try:
+                        animation_data = Animation_Data()
+                        animation_data.animation = [
+                            f"Starting notification of {char.uuid}...",
+                            f"Starting notification of {char.uuid} ..",
+                            f"Starting notification of {char.uuid}  .",
+                            f"Starting notification of {char.uuid}.  ",
+                            f"Starting notification of {char.uuid}.. ",
+                        ]
+                        await animation_queue.put(animation_data)
+                        animate_event.set()
+                        await state.conn.client.stop_notify(char)
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                    except BleakError:
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                        write(1, FOOTER, f"'BleakError stopping notification {char.uuid}':{WIDTH}")
+                        flush()
+                        return False
+                    except TimeoutError:
+                        animate_event.clear()
+                        await asyncio.sleep(0)
+                        write(1, FOOTER, f"'TimeoutError stopping notification {char.uuid}':{WIDTH}")
+                        flush()
+                        return False
+        write(1, FOOTER, f"{'Notifications Disabled':{WIDTH}}")
+        flush()
+        return False
+
     # Asyncio stuff
     main_task = asyncio.current_task()
 
@@ -351,7 +449,7 @@ async def bleer(state: State):
     hide_cursor()
     clear()
     home()
-    write(1, HEADER, f"{'(Q)uit (S)can (D)isconnect (R)ead':{WIDTH}}")
+    write(1, HEADER, f"{'(Q)uit (S)can (D)isconnect (R)ead (N)otify':{WIDTH}}")
     write(1, TOP_SEPERATOR, "-" * WIDTH)
     write(1, BOTTOM_SEPERATOR, "-" * WIDTH)
     flush()
@@ -408,12 +506,14 @@ async def bleer(state: State):
                             animate_event.set()
                             await state.conn.client.connect()
                             animate_event.clear()
+                            await asyncio.sleep(0)
                             write(1, FOOTER, f"{'Connected':{WIDTH}}")
                             state.mode = Mode.CONN
                             initialize_client_data(state.conn)
                             state.conn.current_idx = update_conn_data(state.conn)
                         except TimeoutError:
                             animate_event.clear()
+                            await asyncio.sleep(0)
                             write(1, FOOTER, f"{f'Failed to connect to {addr}':{WIDTH}}")
 
                         flush()
@@ -459,7 +559,14 @@ async def bleer(state: State):
                         write(1, FOOTER, f"{'Finished reading characteristics':{WIDTH}}")
                         state.conn.current_idx = update_conn_data(state.conn)
                         flush()
+                    case Keys.N:
+                        if not state.conn.notifying:
+                            state.conn.notifying = await notify_all(state.conn, animate_event, animation_queue)
+                        else:
+                            state.conn.notifying = await notify_none(state.conn, animate_event, animation_queue)
+
                 if not state.conn.client.is_connected and state.mode == Mode.CONN:
+                    state.conn.notifying = False
                     write(1, FOOTER, f"{'Client Disconnected - Press D to go back to scan':{WIDTH}}")
                     flush()
 
