@@ -339,14 +339,15 @@ async def bleer(state: State):
         # NOTE: I hate that the callback can't take the equivent of a struct
         # which includes user data and we have to do these scope shenanigans
         # to "pass in" data.
-        for service in conn.cache.services:
-            for chached_char in service.characteristics:
-                if chached_char.uuid == char.uuid:
+        for service in state.conn.cache.services:
+            for cached_char in service.characteristics:
+                if cached_char.uuid == char.uuid:
                     cached_char.data = copy(data)
-                    write(1, FOOTER, f"'Notification received on {char.uuid}':{WIDTH}")
+                    write(1, FOOTER, f"{f'Notification received on {char.uuid}':{WIDTH}}")
                     flush()
+                    update_conn_data(state.conn)
                     return
-        write(1, FOOTER, f"'Received unknown notification on {char.uuid}':{WIDTH}")
+        write(1, FOOTER, f"{f'Recieved unknown notification on {char.uuid}':{WIDTH}}")
         flush()
 
     async def notify_all(
@@ -369,19 +370,19 @@ async def bleer(state: State):
                         ]
                         await animation_queue.put(animation_data)
                         animate_event.set()
-                        await state.conn.client.start_notify(char, notify_callback)
+                        await conn.client.start_notify(char, notify_callback)
                         animate_event.clear()
                         await asyncio.sleep(0)
                     except BleakError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"'BleakError registering notification {char.uuid}':{WIDTH}")
+                        write(1, FOOTER, f"{f'BleakError registering notification {char.uuid}':{WIDTH}}")
                         flush()
                         return False
                     except TimeoutError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"'TimeoutError registering notification {char.uuid}':{WIDTH}")
+                        write(1, FOOTER, f"{f'TimeoutError registering notification {char.uuid}':{WIDTH}}")
                         flush()
                         return False
         write(1, FOOTER, f"{'Notifications Enabled':{WIDTH}}")
@@ -404,11 +405,11 @@ async def bleer(state: State):
                     try:
                         animation_data = Animation_Data()
                         animation_data.animation = [
-                            f"Starting notification of {char.uuid}...",
-                            f"Starting notification of {char.uuid} ..",
-                            f"Starting notification of {char.uuid}  .",
-                            f"Starting notification of {char.uuid}.  ",
-                            f"Starting notification of {char.uuid}.. ",
+                            f"Stoping notification of {char.uuid}...",
+                            f"Stoping notification of {char.uuid} ..",
+                            f"Stoping notification of {char.uuid}  .",
+                            f"Stoping notification of {char.uuid}.  ",
+                            f"Stoping notification of {char.uuid}.. ",
                         ]
                         await animation_queue.put(animation_data)
                         animate_event.set()
@@ -418,13 +419,13 @@ async def bleer(state: State):
                     except BleakError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"'BleakError stopping notification {char.uuid}':{WIDTH}")
+                        write(1, FOOTER, f"{f'BleakError stopping notification {char.uuid}':{WIDTH}}")
                         flush()
                         return False
                     except TimeoutError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"'TimeoutError stopping notification {char.uuid}':{WIDTH}")
+                        write(1, FOOTER, f"{f'TimeoutError stopping notification {char.uuid}':{WIDTH}}")
                         flush()
                         return False
         write(1, FOOTER, f"{'Notifications Disabled':{WIDTH}}")
