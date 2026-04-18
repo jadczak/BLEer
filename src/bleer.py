@@ -3,15 +3,16 @@ import msvcrt
 import sys
 import time
 
-from copy import copy
 from bleak import BleakClient
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.exc import BleakError
+from copy import copy
 from enum import auto, Enum
 from itertools import cycle
+from shutil import get_terminal_size
 from typing import ValuesView
 
 
@@ -21,16 +22,30 @@ from keymap import Keys
 OK = 0
 ERROR = 1
 
+
 # Screen coordinates and offsets
-HEIGHT: int = 38
-WIDTH: int = 120
-HEADER: int = 1
-TOP_SEPERATOR: int = HEADER + 1
-FIRST_LINE: int = TOP_SEPERATOR + 1
-FOOTER: int = HEIGHT - 1
-BOTTOM_SEPERATOR: int = FOOTER - 1
-LAST_LINE: int = BOTTOM_SEPERATOR - 1
-WRITEABLE = LAST_LINE - FIRST_LINE
+class ScreenData:
+    __slots__ = (
+        "width",
+        "height",
+        "header",
+        "top_seperator",
+        "first_line",
+        "footer",
+        "bottom_seperator",
+        "last_line",
+        "writable",
+    )
+
+    def __init__(self):
+        self.width, self.height = get_terminal_size()
+        self.header: int = 1
+        self.top_seperator: int = self.header + 1
+        self.first_line: int = self.top_seperator + 1
+        self.footer: int = self.height - 1
+        self.bottom_seperator: int = self.footer - 1
+        self.last_line: int = self.bottom_seperator - 1
+        self.writable = self.last_line - self.first_line
 
 
 class ScanData:
@@ -60,12 +75,13 @@ class Mode(Enum):
 
 
 class State:
-    __slots__ = "mode", "scan", "conn"
+    __slots__ = "mode", "scan", "conn", "screen"
 
     def __init__(self):
         self.mode: Mode = Mode(Mode.SCAN)
         self.scan: ScanData = ScanData()
         self.conn: ConnData = ConnData()
+        self.screen: ScreenData = ScreenData()
 
 
 class Animation_Data:
@@ -118,7 +134,10 @@ async def get_key(queue: asyncio.Queue):
 
 
 async def scan(
-    timeout: float, event: asyncio.Event, queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]]
+    state: State,
+    timeout: float,
+    event: asyncio.Event,
+    queue: asyncio.Queue[dict[str, tuple[BLEDevice, AdvertisementData]]],
 ):
     TICK: float = 0.15
     DOTS = cycle(
@@ -136,16 +155,16 @@ async def scan(
         async with BleakScanner() as scanner:
             while time.time() < end:
                 s = f"Scanning{next(DOTS)}"
-                write(1, FOOTER, f"{s:{WIDTH}}")
+                write(1, state.screen.footer, f"{s:{state.screen.width}}")
                 flush()
                 await asyncio.sleep(TICK)
             await queue.put(scanner.discovered_devices_and_advertisement_data)
-            write(1, FOOTER, f"{'Scanning Finished':{WIDTH}}")
+            write(1, state.screen.footer, f"{'Scanning Finished':{state.screen.width}}")
             flush()
             event.clear()
 
 
-async def animate(event: asyncio.Event, animation_data: asyncio.Queue[Animation_Data]):
+async def animate(state: State, event: asyncio.Event, animation_data: asyncio.Queue[Animation_Data]):
     TICK: float = 0.15
     while True:
         await event.wait()
@@ -159,7 +178,7 @@ async def animate(event: asyncio.Event, animation_data: asyncio.Queue[Animation_
                 data = await animation_data.get()
                 frames = cycle(data.animation)
             s = f"{next(frames)}"
-            write(1, FOOTER, f"{s:{WIDTH}}")
+            write(1, state.screen.footer, f"{s:{state.screen.width}}")
             flush()
             await asyncio.sleep(TICK)
 
@@ -174,7 +193,9 @@ def truncate(s: str | None, length: int) -> str:
     return s
 
 
-def update_scan_result(scan: ScanData) -> int:
+def update_scan_result(state: State) -> int:
+    scan = state.scan
+    screen = state.screen
     n_devices = len(scan.devices_and_data)
     last_idx = n_devices - 1
     if scan.current_idx < 0:
@@ -186,22 +207,22 @@ def update_scan_result(scan: ScanData) -> int:
     ADDR_LEN: int = 20
     RSSI_LEN: int = 6
     LOCAL_LEN: int = 20
-    BLANK_LEN: int = WIDTH - NAME_LEN - ADDR_LEN - RSSI_LEN - LOCAL_LEN
+    BLANK_LEN: int = screen.width - NAME_LEN - ADDR_LEN - RSSI_LEN - LOCAL_LEN
     BLANK: str = " "
 
     header = (
         f"{'Name':{NAME_LEN}}{'Address':{ADDR_LEN}}{'RSSI':^{RSSI_LEN}}{'Local Name':{LOCAL_LEN}}{BLANK:{BLANK_LEN}}"
     )
-    write(1, FIRST_LINE, header)
-    line_no = FIRST_LINE + 1
+    write(1, screen.first_line, header)
+    line_no = screen.first_line + 1
 
     # NOTE: Try putting the highlighted line in the middle of the writable area.
-    start_idx = scan.current_idx - WRITEABLE // 2
+    start_idx = scan.current_idx - screen.writable // 2
     if start_idx < 0:
         start_idx = 0
 
     for idx, (dev, data) in enumerate(scan.devices_and_data):
-        if line_no <= LAST_LINE and idx >= start_idx:
+        if line_no <= screen.last_line and idx >= start_idx:
             name = truncate(dev.name, NAME_LEN)
             local_name = truncate(data.local_name, LOCAL_LEN)
             dev_addr = truncate(dev.address, ADDR_LEN)
@@ -215,14 +236,14 @@ def update_scan_result(scan: ScanData) -> int:
         else:
             continue
 
-    if (last_idx - start_idx) >= WRITEABLE:
+    if (last_idx - start_idx) >= screen.writable:
         # there's more data that didn't fit the screen.
-        write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
+        write(1, screen.last_line, f"{'---MORE---':{screen.width}}")
     else:
         # make sure we blank out stuff that didn't get
         # drawn this update.
-        while line_no <= LAST_LINE:
-            write(1, line_no, f"{BLANK:{WIDTH}}")
+        while line_no <= screen.last_line:
+            write(1, line_no, f"{BLANK:{screen.width}}")
             line_no += 1
     flush()
     return scan.current_idx
@@ -247,7 +268,9 @@ def initialize_client_data(conn: ConnData):
         conn.cache.services.append(copy(service_cache))
 
 
-def update_conn_data(conn: ConnData) -> int:
+def update_conn_data(state: State) -> int:
+    conn = state.conn
+    screen = state.screen
     conn_data = [
         ("Name", conn.cache.name),
         ("Address", conn.cache.address),
@@ -270,20 +293,20 @@ def update_conn_data(conn: ConnData) -> int:
         conn.current_idx = last_idx
 
     FIELD_LEN: int = 20
-    DATA_LEN: int = WIDTH - FIELD_LEN
+    DATA_LEN: int = screen.width - FIELD_LEN
     BLANK: str = " "
 
     header = f"{'Field':{FIELD_LEN}}{'DATA':{DATA_LEN}}"
-    write(1, FIRST_LINE, header)
-    line_no = FIRST_LINE + 1
+    write(1, screen.first_line, header)
+    line_no = screen.first_line + 1
 
     # NOTE: Try putting the highlighted line in the middle of the writable area.a.
-    start_idx = conn.current_idx - WRITEABLE // 2
+    start_idx = conn.current_idx - screen.writable // 2
     if start_idx < 0:
         start_idx = 0
 
     for idx, (field, data) in enumerate(conn_data):
-        if line_no <= LAST_LINE and idx >= start_idx:
+        if line_no <= screen.last_line and idx >= start_idx:
             f_string = truncate(field, DATA_LEN)
             d_string = truncate(data, DATA_LEN)
             s = f"{f_string:{FIELD_LEN}}{d_string:{DATA_LEN}}"
@@ -295,14 +318,14 @@ def update_conn_data(conn: ConnData) -> int:
         else:
             continue
 
-    if (last_idx - start_idx) >= WRITEABLE:
+    if (last_idx - start_idx) >= screen.writable:
         # there's more data that didn't fit the screen.
-        write(1, LAST_LINE, f"{'---MORE---':{WIDTH}}")
+        write(1, screen.last_line, f"{'---MORE---':{screen.width}}")
     else:
         # make sure we blank out stuff that didn't get
         # drawn this update.
-        while line_no <= LAST_LINE:
-            write(1, line_no, f"{BLANK:{WIDTH}}")
+        while line_no <= screen.last_line:
+            write(1, line_no, f"{BLANK:{screen.width}}")
             line_no += 1
     flush()
     return conn.current_idx
@@ -334,6 +357,19 @@ async def read_characteristics(
                 await asyncio.sleep(0)
 
 
+def redraw_screen(state: State) -> None:
+    clear()
+    home()
+    write(1, state.screen.header, f"{'(Q)uit (S)can (D)isconnect (R)ead (N)otify':{state.screen.width}}")
+    write(1, state.screen.top_seperator, "-" * state.screen.width)
+    write(1, state.screen.bottom_seperator, "-" * state.screen.width)
+    flush()
+    if state.mode == Mode.SCAN and state.scan.devices_and_data:
+        update_scan_result(state)
+    elif state.mode == Mode.CONN:
+        update_conn_data(state)
+
+
 async def bleer(state: State):
     def notify_callback(char: BleakGATTCharacteristic, data: bytearray):
         # NOTE: I hate that the callback can't take the equivent of a struct
@@ -343,11 +379,11 @@ async def bleer(state: State):
             for cached_char in service.characteristics:
                 if cached_char.uuid == char.uuid:
                     cached_char.data = copy(data)
-                    write(1, FOOTER, f"{f'Notification received on {char.uuid}':{WIDTH}}")
+                    write(1, state.screen.footer, f"{f'Notification received on {char.uuid}':{state.screen.width}}")
                     flush()
-                    update_conn_data(state.conn)
+                    update_conn_data(state)
                     return
-        write(1, FOOTER, f"{f'Recieved unknown notification on {char.uuid}':{WIDTH}}")
+        write(1, state.screen.footer, f"{f'Recieved unknown notification on {char.uuid}':{state.screen.width}}")
         flush()
 
     async def notify_all(
@@ -376,16 +412,24 @@ async def bleer(state: State):
                     except BleakError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"{f'BleakError registering notification {char.uuid}':{WIDTH}}")
+                        write(
+                            1,
+                            state.screen.footer,
+                            f"{f'BleakError registering notification {char.uuid}':{state.screen.width}}",
+                        )
                         flush()
                         return False
                     except TimeoutError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"{f'TimeoutError registering notification {char.uuid}':{WIDTH}}")
+                        write(
+                            1,
+                            state.screen.footer,
+                            f"{f'TimeoutError registering notification {char.uuid}':{state.screen.width}}",
+                        )
                         flush()
                         return False
-        write(1, FOOTER, f"{'Notifications Enabled':{WIDTH}}")
+        write(1, state.screen.footer, f"{'Notifications Enabled':{state.screen.width}}")
         flush()
         return True
 
@@ -419,16 +463,24 @@ async def bleer(state: State):
                     except BleakError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"{f'BleakError stopping notification {char.uuid}':{WIDTH}}")
+                        write(
+                            1,
+                            state.screen.footer,
+                            f"{f'BleakError stopping notification {char.uuid}':{state.screen.width}}",
+                        )
                         flush()
                         return False
                     except TimeoutError:
                         animate_event.clear()
                         await asyncio.sleep(0)
-                        write(1, FOOTER, f"{f'TimeoutError stopping notification {char.uuid}':{WIDTH}}")
+                        write(
+                            1,
+                            state.screen.footer,
+                            f"{f'TimeoutError stopping notification {char.uuid}':{state.screen.width}}",
+                        )
                         flush()
                         return False
-        write(1, FOOTER, f"{'Notifications Disabled':{WIDTH}}")
+        write(1, state.screen.footer, f"{'Notifications Disabled':{state.screen.width}}")
         flush()
         return False
 
@@ -442,17 +494,17 @@ async def bleer(state: State):
     key_queue = asyncio.Queue()
     animation_queue: asyncio.Queue[Animation_Data] = asyncio.Queue()
 
-    asyncio.create_task(scan(5.0, scan_event, scan_queue), name="scan task")
+    asyncio.create_task(scan(state, 5.0, scan_event, scan_queue), name="scan task")
     asyncio.create_task(get_key(key_queue), name="keyboard task")
-    asyncio.create_task(animate(event=animate_event, animation_data=animation_queue), name="animate task")
+    asyncio.create_task(animate(state=state, event=animate_event, animation_data=animation_queue), name="animate task")
 
     # Setup the terminal
     hide_cursor()
     clear()
     home()
-    write(1, HEADER, f"{'(Q)uit (S)can (D)isconnect (R)ead (N)otify':{WIDTH}}")
-    write(1, TOP_SEPERATOR, "-" * WIDTH)
-    write(1, BOTTOM_SEPERATOR, "-" * WIDTH)
+    write(1, state.screen.header, f"{'(Q)uit (S)can (D)isconnect (R)ead (N)otify':{state.screen.width}}")
+    write(1, state.screen.top_seperator, "-" * state.screen.width)
+    write(1, state.screen.bottom_seperator, "-" * state.screen.width)
     flush()
 
     # Main loop
@@ -460,6 +512,11 @@ async def bleer(state: State):
 
     conn_timeout: float = 30
     while key != Keys.Q:
+        width, height = get_terminal_size()
+        if state.screen.width != width or state.screen.height != height:
+            state.screen = ScreenData()
+            redraw_screen(state)
+
         if not key_queue.empty():
             key = await key_queue.get()
         else:
@@ -469,27 +526,27 @@ async def bleer(state: State):
                 match key:
                     case Keys.S:
                         if scan_event.is_set():
-                            write(1, FOOTER, f"{'Scan already in process':{WIDTH}}")
+                            write(1, state.screen.footer, f"{'Scan already in process':{state.screen.width}}")
                         else:
                             scan_event.set()
-                            write(1, FOOTER, f"{'Starting scan...':{WIDTH}}")
+                            write(1, state.screen.footer, f"{'Starting scan...':{state.screen.width}}")
                         flush()
                     case Keys.UP:
                         if state.scan.devices_and_data:
                             state.scan.current_idx -= 1
-                            state.scan.current_idx = update_scan_result(state.scan)
+                            state.scan.current_idx = update_scan_result(state)
                     case Keys.PG_UP:
                         if state.scan.devices_and_data:
                             state.scan.current_idx -= 10
-                            state.scan.current_idx = update_scan_result(state.scan)
+                            state.scan.current_idx = update_scan_result(state)
                     case Keys.DOWN:
                         if state.scan.devices_and_data:
                             state.scan.current_idx += 1
-                            state.scan.current_idx = update_scan_result(state.scan)
+                            state.scan.current_idx = update_scan_result(state)
                     case Keys.PG_DOWN:
                         if state.scan.devices_and_data:
                             state.scan.current_idx += 10
-                            state.scan.current_idx = update_scan_result(state.scan)
+                            state.scan.current_idx = update_scan_result(state)
                     case Keys.ENTER:
                         state.conn.device_and_data = state.scan.devices_and_data[state.scan.current_idx]
                         addr = state.conn.device_and_data[0].address
@@ -508,14 +565,14 @@ async def bleer(state: State):
                             await state.conn.client.connect()
                             animate_event.clear()
                             await asyncio.sleep(0)
-                            write(1, FOOTER, f"{'Connected':{WIDTH}}")
+                            write(1, state.screen.footer, f"{'Connected':{state.screen.width}}")
                             state.mode = Mode.CONN
                             initialize_client_data(state.conn)
-                            state.conn.current_idx = update_conn_data(state.conn)
+                            state.conn.current_idx = update_conn_data(state)
                         except TimeoutError:
                             animate_event.clear()
                             await asyncio.sleep(0)
-                            write(1, FOOTER, f"{f'Failed to connect to {addr}':{WIDTH}}")
+                            write(1, state.screen.footer, f"{f'Failed to connect to {addr}':{state.screen.width}}")
 
                         flush()
 
@@ -527,38 +584,38 @@ async def bleer(state: State):
                         state.scan.devices_and_data, key=lambda x: x[1].rssi, reverse=True
                     )
                     current_idx = 0
-                    update_scan_result(state.scan)
+                    update_scan_result(state)
 
             case Mode.CONN:
                 match key:
                     case Keys.D:
                         write(
                             1,
-                            FOOTER,
-                            f"{f'Disconnecting from {state.conn.client.address}':{WIDTH}}",
+                            state.screen.footer,
+                            f"{f'Disconnecting from {state.conn.client.address}':{state.screen.width}}",
                         )
                         flush()
                         await state.conn.client.disconnect()
-                        write(1, FOOTER, f"{'Disconnected':{WIDTH}}")
+                        write(1, state.screen.footer, f"{'Disconnected':{state.screen.width}}")
                         flush()
-                        state.scan.current_idx = update_scan_result(state.scan)
+                        state.scan.current_idx = update_scan_result(state)
                         state.mode = Mode.SCAN
                     case Keys.UP:
                         state.conn.current_idx -= 1
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        state.conn.current_idx = update_conn_data(state)
                     case Keys.PG_UP:
                         state.conn.current_idx -= 10
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        state.conn.current_idx = update_conn_data(state)
                     case Keys.DOWN:
                         state.conn.current_idx += 1
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        state.conn.current_idx = update_conn_data(state)
                     case Keys.PG_DOWN:
                         state.conn.current_idx += 10
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        state.conn.current_idx = update_conn_data(state)
                     case Keys.R:
                         await read_characteristics(state.conn, animate_event, animation_queue)
-                        write(1, FOOTER, f"{'Finished reading characteristics':{WIDTH}}")
-                        state.conn.current_idx = update_conn_data(state.conn)
+                        write(1, state.screen.footer, f"{'Finished reading characteristics':{state.screen.width}}")
+                        state.conn.current_idx = update_conn_data(state)
                         flush()
                     case Keys.N:
                         if not state.conn.notifying:
@@ -568,13 +625,17 @@ async def bleer(state: State):
 
                 if not state.conn.client.is_connected and state.mode == Mode.CONN:
                     state.conn.notifying = False
-                    write(1, FOOTER, f"{'Client Disconnected - Press D to go back to scan':{WIDTH}}")
+                    write(
+                        1,
+                        state.screen.footer,
+                        f"{'Client Disconnected - Press D to go back to scan':{state.screen.width}}",
+                    )
                     flush()
 
         await asyncio.sleep(0.01)
 
     # Clean up on quit
-    write(1, FOOTER, f"{'Quitting...':{WIDTH}}")
+    write(1, state.screen.footer, f"{'Quitting...':{state.screen.width}}")
     flush()
     if state.conn.client is not None:
         if state.conn.client.is_connected:
@@ -592,11 +653,11 @@ async def main():
     try:
         await bleer(state)
         reset_color()
-        move_cursor(1, HEIGHT)
+        move_cursor(1, state.screen.height)
         show_cursor()
     except Exception as e:
         reset_color()
-        move_cursor(1, HEIGHT)
+        move_cursor(1, state.screen.height)
         show_cursor()
         if state.conn.client is not None:
             if state.conn.client.is_connected:
